@@ -11,212 +11,113 @@ require "etc"
 # done.
 # - @adamv
 
+# In addition to @adamv's changes, which were used as the
+# basis for OSX functionality, the supplied patch incorporates
+# several usability patches using nethack.alt.org as a
+# guide.  This includes statuscolors, menucolors, sortloot,
+# and more.  For more information, see
+#     https://github.com/ffleming/nethack-3.4.3-nao-osx
+# - @ffleming
+
 class Nethack < Formula
   desc "Single-player roguelike video game"
-  homepage "http://www.nethack.org/index.html"
-  url "https://downloads.sourceforge.net/project/nethack/nethack/3.4.3/nethack-343-src.tgz"
-  version "3.4.3"
-  sha256 "bb39c3d2a9ee2df4a0c8fdde708fbc63740853a7608d2f4c560b488124866fe4"
+  homepage 'http://www.nethack.org/index.html'
+  url 'https://downloads.sourceforge.net/project/nethack/nethack/3.4.3/nethack-343-src.tgz'
+  version '3.4.3-nao'
+  revision 1
+  sha256 'bb39c3d2a9ee2df4a0c8fdde708fbc63740853a7608d2f4c560b488124866fe4'
 
   fails_with :llvm do
     build 2334
   end
 
-  # Don't remove save folder
-  skip_clean "libexec/save"
+  patch do
+    url 'https://raw.githubusercontent.com/ffleming/nethack-3.4.3-nao-osx/v1.2/nethack-3.4.3-nao-osx.diff'
+    sha256 'b2b37cc8c41d4949b12b5cfde6b51108f4c5b890530d34b454a61808d1d55166'
+  end
 
-  patch :DATA
+  def user
+    Etc.getpwuid.name
+  end
+
+  def gamedir
+    libexec
+  end
+
+  def vardir
+    var + 'nethack'
+  end
+
+  def savedir
+    vardir + 'save'
+  end
+
+  def caveats
+    <<-EOS.undent
+    nao-osx (v3.4.3-nao) is incompatible with vanilla (v3.4.3) nethack saves
+    Old saves can be found in #{HOMEBREW_PREFIX}/Cellar/#{name}/3.4.3/libexec/save
+    EOS
+  end
 
   def install
     # Build everything in-order; no multi builds.
     ENV.deparallelize
 
-    # Symlink makefiles
-    system "sh", "sys/unix/setup.sh"
-
-    inreplace "include/config.h",
-      /^#\s*define HACKDIR.*$/,
-      "#define HACKDIR \"#{libexec}\""
-
-    # Enable wizard mode for the current user
-    wizard = Etc.getpwuid.name
-
-    inreplace "include/config.h",
-      /^#\s*define\s+WIZARD\s+"wizard"/,
-      "#define WIZARD \"#{wizard}\""
-
-    inreplace "include/config.h",
-      /^#\s*define\s+WIZARD_NAME\s+"wizard"/,
-      "#define WIZARD_NAME \"#{wizard}\""
-
-    cd "dat" do
-      # Make the data first, before we munge the CFLAGS
-      system "make"
-      %w[perm logfile].each do |f|
-        touch f
-        libexec.install f
-      end
-
-      # Stage the data
-      libexec.install %w[help hh cmdhelp history opthelp wizhelp dungeon license data oracles options rumors quest.dat]
-      libexec.install Dir["*.lev"]
+    # Use the user, not 'wizard', for wizard mode.  Ensures that the "Contact WIZARD_NAME" debug
+    # message provides useful information.
+    inreplace "include/config.h" do |s|
+      s.gsub!(/^#\s*define\s+WIZARD\s+"wizard".*$/, "#define WIZARD \"#{user}\"")
+      s.gsub!(/^#\s*define\s+WIZARD_NAME.*$/, "#define WIZARD_NAME \"#{user}\"")
     end
 
-    # Make the game
-    ENV.append_to_cflags "-I../include"
-    cd "src" do
-      system "make"
+    # Patch the patch!  The patch installs to /opt and assumes a non-Homebrew system. This
+    # sets the insall location to the appropriate cellar.
+    inreplace "include/config.h",
+      /^#\s*define\s+HACKDIR.*$/, "#define HACKDIR \"#{gamedir}\""
+
+    inreplace "include/unixconf.h",
+      /^#define\s+VAR_PLAYGROUND.*$/, "#define VAR_PLAYGROUND \"#{vardir}\""
+
+    inreplace "sys/unix/Makefile.top" do |s|
+      s.gsub!(/^PREFIX\s*=.*$/,"PREFIX = #{prefix}")
+      s.gsub!(/^GAMEDIR\s*=.*$/,"GAMEDIR = #{gamedir}")
+      s.gsub!(/^VARDIR\s*=.*$/,"VARDIR = #{vardir}")
+      s.gsub!(/^GAMEUID\s*=.*$/,"GAMEUID = #{user}")
     end
 
-    bin.install "src/nethack"
-    (libexec+"save").mkpath
+    inreplace "sys/unix/Makefile.doc",
+      /^MANDIR\s*=.*$/, "MANDIR = #{man6}"
+
+    # Copy makefiles
+    system 'sh', 'sys/unix/setup.sh'
+
+    # Build and install
+    system 'make'
+    system 'make', 'install'
+
+    # Create manpage path and install manpages
+    man6.mkpath
+    cd 'doc' do
+      system 'make', 'manpages'
+    end
+
+    # Install nethack binary (recover binary is in gamedir)
+    bin.install 'src/nethack'
 
     # These need to be group-writable in multi-user situations
-    chmod "g+w", libexec
-    chmod "g+w", libexec+"save"
+    savedir.mkpath
+    gamedir.chmod(0775)
+    savedir.chmod(0775)
+  end
+
+  def post_install
+    # Copy save files from the vanilla nethack save directory. Will not overwrite.
+    if Dir.exists? "#{HOMEBREW_PREFIX}/Cellar/#{name}/3.4.3/libexec/save"
+      cp_r "#{HOMEBREW_PREFIX}/Cellar/#{name}/3.4.3/libexec/save/.", savedir
+    end
+  end
+
+  test do
+    system bin/'nethack', '--version'
   end
 end
-
-__END__
-diff --git a/.gitignore b/.gitignore
-new file mode 100644
-index 0000000..8b2ccd2
---- /dev/null
-+++ b/.gitignore
-@@ -0,0 +1,2 @@
-+*.o
-+*.lev
-diff --git a/include/system.h b/include/system.h
-index a4efff9..cfe96f1 100644
---- a/include/system.h
-+++ b/include/system.h
-@@ -79,10 +79,10 @@ typedef long	off_t;
- # if !defined(__SC__) && !defined(LINUX)
- E  long NDECL(random);
- # endif
--# if (!defined(SUNOS4) && !defined(bsdi) && !defined(__FreeBSD__)) || defined(RANDOM)
-+# if (!defined(SUNOS4) && !defined(bsdi) && !defined(__NetBSD__) && !defined(__FreeBSD__) && !defined(__DragonFly__) && !defined(__APPLE__)) || defined(RANDOM)
- E void FDECL(srandom, (unsigned int));
- # else
--#  if !defined(bsdi) && !defined(__FreeBSD__)
-+#  if !defined(bsdi) && !defined(__NetBSD__) && !defined(__FreeBSD__) && !defined(__DragonFly__) && !defined(__APPLE__)
- E int FDECL(srandom, (unsigned int));
- #  endif
- # endif
-@@ -132,7 +132,7 @@ E void FDECL(perror, (const char *));
- E void FDECL(qsort, (genericptr_t,size_t,size_t,
- 		     int(*)(const genericptr,const genericptr)));
- #else
--# if defined(BSD) || defined(ULTRIX)
-+# if defined(BSD) || defined(ULTRIX) && !defined(__NetBSD__)
- E  int qsort();
- # else
- #  if !defined(LATTICE) && !defined(AZTEC_50)
-@@ -421,7 +421,7 @@ E size_t FDECL(strlen, (const char *));
- # ifdef HPUX
- E unsigned int	FDECL(strlen, (char *));
- #  else
--#   if !(defined(ULTRIX_PROTO) && defined(__GNUC__))
-+#   if !(defined(ULTRIX_PROTO) && defined(__GNUC__)) && !defined(__NetBSD__)
- E int	FDECL(strlen, (const char *));
- #   endif
- #  endif /* HPUX */
-@@ -476,9 +476,9 @@ E  char *sprintf();
- #  if !defined(SVR4) && !defined(apollo)
- #   if !(defined(ULTRIX_PROTO) && defined(__GNUC__))
- #    if !(defined(SUNOS4) && defined(__STDC__)) /* Solaris unbundled cc (acc) */
--E int FDECL(vsprintf, (char *, const char *, va_list));
--E int FDECL(vfprintf, (FILE *, const char *, va_list));
--E int FDECL(vprintf, (const char *, va_list));
-+// E int FDECL(vsprintf, (char *, const char *, va_list));
-+// E int FDECL(vfprintf, (FILE *, const char *, va_list));
-+// E int FDECL(vprintf, (const char *, va_list));
- #    endif
- #   endif
- #  endif
-@@ -521,7 +521,7 @@ E struct tm *FDECL(localtime, (const time_t *));
- #  endif
- # endif
- 
--# if defined(ULTRIX) || (defined(BSD) && defined(POSIX_TYPES)) || defined(SYSV) || defined(MICRO) || defined(VMS) || defined(MAC) || (defined(HPUX) && defined(_POSIX_SOURCE))
-+# if defined(ULTRIX) || (defined(BSD) && defined(POSIX_TYPES)) || defined(SYSV) || defined(MICRO) || defined(VMS) || defined(MAC) || (defined(HPUX) && defined(_POSIX_SOURCE)) || defined(__NetBSD__)
- E time_t FDECL(time, (time_t *));
- # else
- E long FDECL(time, (time_t *));
-diff --git a/include/unixconf.h b/include/unixconf.h
-index fe1b006..3a195a6 100644
---- a/include/unixconf.h
-+++ b/include/unixconf.h
-@@ -19,20 +19,20 @@
-  */
- 
- /* define exactly one of the following four choices */
--/* #define BSD 1 */	/* define for 4.n/Free/Open/Net BSD  */
-+#define BSD 1 	/* define for 4.n/Free/Open/Net BSD  */
- 			/* also for relatives like SunOS 4.x, DG/UX, and */
- 			/* older versions of Linux */
- /* #define ULTRIX */	/* define for Ultrix v3.0 or higher (but not lower) */
- 			/* Use BSD for < v3.0 */
- 			/* "ULTRIX" not to be confused with "ultrix" */
--#define SYSV		/* define for System V, Solaris 2.x, newer versions */
-+/* #define SYSV */		/* define for System V, Solaris 2.x, newer versions */
- 			/* of Linux */
- /* #define HPUX */	/* Hewlett-Packard's Unix, version 6.5 or higher */
- 			/* use SYSV for < v6.5 */
- 
- 
- /* define any of the following that are appropriate */
--#define SVR4		/* use in addition to SYSV for System V Release 4 */
-+/* #define SVR4 */		/* use in addition to SYSV for System V Release 4 */
- 			/* including Solaris 2+ */
- #define NETWORK		/* if running on a networked system */
- 			/* e.g. Suns sharing a playground through NFS */
-@@ -285,8 +285,8 @@
- 
- #if defined(BSD) || defined(ULTRIX)
- # if !defined(DGUX) && !defined(SUNOS4)
--#define memcpy(d, s, n)		bcopy(s, d, n)
--#define memcmp(s1, s2, n)	bcmp(s2, s1, n)
-+// #define memcpy(d, s, n)      bcopy(s, d, n)
-+// #define memcmp(s1, s2, n)    bcmp(s2, s1, n)
- # endif
- # ifdef SUNOS4
- #include <memory.h>
-diff --git a/sys/unix/Makefile.src b/sys/unix/Makefile.src
-index 29ad99a..7842af2 100644
---- a/sys/unix/Makefile.src
-+++ b/sys/unix/Makefile.src
-@@ -151,8 +151,8 @@ GNOMEINC=-I/usr/lib/glib/include -I/usr/lib/gnome-libs/include -I../win/gnome
- # flags for debugging:
- # CFLAGS = -g -I../include
- 
--CFLAGS = -O -I../include
--LFLAGS = 
-+#CFLAGS = -O -I../include
-+#LFLAGS = 
- 
- # The Qt and Be window systems are written in C++, while the rest of
- # NetHack is standard C.  If using Qt, uncomment the LINK line here to get
-@@ -230,8 +230,8 @@ WINOBJ = $(WINTTYOBJ)
- # WINTTYLIB = -ltermcap
- # WINTTYLIB = -lcurses
- # WINTTYLIB = -lcurses16
--# WINTTYLIB = -lncurses
--WINTTYLIB = -ltermlib
-+WINTTYLIB = -lncurses
-+#WINTTYLIB = -ltermlib
- #
- # libraries for X11
- # If USE_XPM is defined in config.h, you will also need -lXpm here.
-diff --git a/win/tty/termcap.c b/win/tty/termcap.c
-index 706e203..dadc9a9 100644
---- a/win/tty/termcap.c
-+++ b/win/tty/termcap.c
-@@ -835,7 +835,7 @@ cl_eos()			/* free after Robert Viduya */
- 
- #include <curses.h>
- 
--#ifndef LINUX
-+#if !defined(LINUX) && !defined(__APPLE__)
- extern char *tparm();
- #endif
